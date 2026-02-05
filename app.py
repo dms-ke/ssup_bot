@@ -163,7 +163,7 @@ def bot():
                     f"📋 *Catalog*: {shop[2]}\n"
                     f"💳 *Pay*: {shop[4]}\n"
                     f"----------------\n"
-                    f"Powered by ShopBot"
+                    f"Powered by Dtekk ShopBot"
                 )
                 msg.body(response_text)
         else:
