@@ -5,8 +5,8 @@ from datetime import datetime
 
 # --- CONFIGURATION (Get these from developer.safaricom.co.ke) ---
 # For Sandbox, use these defaults or create your own app
-CONSUMER_KEY = "YOUR_CONSUMER_KEY"      # REPLACE THIS
-CONSUMER_SECRET = "YOUR_CONSUMER_SECRET" # REPLACE THIS
+CONSUMER_KEY = "rrGeUnVZaFrJHsKNdmiV8PAyjYJJ8St54Z96T7lb2Xp6qlTz"      # REPLACE THIS
+CONSUMER_SECRET = "f1BTs1O6Yoz8MFiqxHGPGfbLAjFfk2dAWNtNpyN28zW12cUlUTfivcymXM143Ydy" # REPLACE THIS
 BUSINESS_SHORTCODE = "174379"           # Sandbox Paybill
 PASSKEY = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919" 
 CALLBACK_URL = " https://ssup-bot.onrender.com/mpesa_callback" # UPDATE THIS AFTER DEPLOY

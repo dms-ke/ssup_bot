@@ -51,7 +51,7 @@ def bot():
                      "💰 *PAY* - Renew your subscription\n"
                      "📝 *UPDATE* - (Coming Soon) Update details\n"
                      "--------------------------------\n"
-                     "Need support? Contact Admin at 07XX...")
+                     "Need support? Contact Admin at 0703903056")
         else:
             # === CUSTOMER / NEW USER MENU ===
             msg.body("🤖 *Welcome to ShopBot Help*\n\n"
