@@ -64,6 +64,48 @@ def search_shop_by_name(query_name):
     conn.close()
     return shop
 
+def update_shop_field(phone_number, field, new_value):
+    """
+    Updates a specific field for a shop.
+    Allowed fields: NAME, CATALOG, LOCATION, PAY, HOURS
+    """
+    # Map friendly names to actual Database Column names
+    # This prevents SQL injection by whitelisting columns
+    column_map = {
+        'NAME': 'shop_name',
+        'CATALOG': 'catalog_link',
+        'LOCATION': 'location_map',
+        'PAY': 'payment_info',
+        'HOURS': 'operating_hours'
+    }
+    
+    # 1. Validate the field
+    db_column = column_map.get(field.upper())
+    if not db_column:
+        return False, "Invalid field name. Use: NAME, CATALOG, LOCATION, PAY, or HOURS"
+
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    try:
+        # 2. Check if shop exists first
+        c.execute("SELECT * FROM shops WHERE phone_number=?", (phone_number,))
+        if not c.fetchone():
+            conn.close()
+            return False, "Shop not found. Please REGISTER first."
+
+        # 3. Execute the Update
+        # We use f-string for the column name (safe because we mapped it above)
+        query = f"UPDATE shops SET {db_column} = ? WHERE phone_number = ?"
+        c.execute(query, (new_value, phone_number))
+        conn.commit()
+        return True, f"Successfully updated {field}."
+        
+    except Exception as e:
+        return False, str(e)
+    finally:
+        conn.close()
+
 def renew_subscription(phone_number, days=30):
     """
     Extends the subscription by X days from today.

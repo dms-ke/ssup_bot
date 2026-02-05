@@ -49,7 +49,9 @@ def bot():
                      "--------------------------------\n"
                      "📊 *STATUS* - Check subscription & details\n"
                      "💰 *PAY* - Renew your subscription\n"
-                     "📝 *UPDATE* - (Coming Soon) Update details\n"
+                     "📝 *UPDATE* - Change details\n"
+                     "   Format: UPDATE | FIELD | VALUE\n"
+                     "   (e.g., UPDATE | HOURS | 8am-8pm)\n"
                      "--------------------------------\n"
                      "Need support? Contact Admin at 0703903056")
         else:
@@ -122,6 +124,36 @@ def bot():
         except Exception as e:
             app.logger.error(f"Payment Error: {e}")
             msg.body("❌ System Error. Try again later.")
+            
+        return str(resp)
+        
+    # --- 4.5 UPDATE DETAILS (New Feature) ---
+    # Format: UPDATE | FIELD | NEW VALUE
+    elif incoming_msg.startswith('UPDATE'):
+        # 1. Parse the command
+        parts = incoming_msg.split('|')
+        
+        # We need exactly 3 parts: Command, Field, Value
+        if len(parts) < 3:
+            msg.body("⚠️ *Update Format Error*\n\n"
+                     "To update, use this format:\n"
+                     "*UPDATE | FIELD | NEW VALUE*\n\n"
+                     "Examples:\n"
+                     "• UPDATE | HOURS | 9am - 9pm\n"
+                     "• UPDATE | PAY | Till 123456\n"
+                     "• UPDATE | CATALOG | www.newmenu.com")
+            return str(resp)
+        
+        _, field_name, new_value = [p.strip() for p in parts]
+        
+        # 2. Call Database
+        success, response_message = database.update_shop_field(sender_number, field_name, new_value)
+        
+        if success:
+            msg.body(f"✅ {response_message}\n\n"
+                     f"Text *STATUS* to see your changes.")
+        else:
+            msg.body(f"❌ Error: {response_message}")
             
         return str(resp)
 
