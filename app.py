@@ -54,7 +54,7 @@ def bot():
                      "Need support? Contact Admin at 0703903056")
         else:
             # === CUSTOMER / NEW USER MENU ===
-            msg.body("🤖 *Welcome to ShopBot Help*\n\n"
+            msg.body("🤖 *Welcome to Dtekk ShopBot Help*\n\n"
                      "🛍️ *I want to find a shop:*\n"
                      "Text: *VIEW [Shop Name]*\n"
                      "(Example: VIEW Mama Mboga)\n\n"
