@@ -9,7 +9,7 @@ CONSUMER_KEY = "YOUR_CONSUMER_KEY"      # REPLACE THIS
 CONSUMER_SECRET = "YOUR_CONSUMER_SECRET" # REPLACE THIS
 BUSINESS_SHORTCODE = "174379"           # Sandbox Paybill
 PASSKEY = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919" 
-CALLBACK_URL = "https://your-app-name.onrender.com/mpesa_callback" # UPDATE THIS AFTER DEPLOY
+CALLBACK_URL = " https://ssup-bot.onrender.com/mpesa_callback" # UPDATE THIS AFTER DEPLOY
 
 def get_access_token():
     """Authenticates with Safaricom to get a temporary token."""
