@@ -53,7 +53,7 @@ def bot():
                      "   Format: UPDATE | FIELD | VALUE\n"
                      "   (e.g., UPDATE | HOURS | 8am-8pm)\n"
                      "--------------------------------\n"
-                     "Need support? Contact Admin at https://dms-23bq.vercel.app/ OR +254703903056")
+                     "Need support? Contact Admin at https://dms-23bq.vercel.app/#contact OR +254703903056")
         else:
             # === CUSTOMER / NEW USER MENU ===
             msg.body("🤖 *Welcome to Dtekk ShopBot Help*\n\n"
