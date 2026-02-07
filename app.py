@@ -1,235 +1,311 @@
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta # <--- Added timedelta
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
+from twilio.rest import Client # <--- Added Client
 
 # Local imports
 import database
 import mpesa
 
 app = Flask(__name__)
-
-# Configure logging
 logging.basicConfig(level=logging.INFO)
-
-# Initialize DB
 database.init_db()
 
+# CONFIGURATION
+MIN_WITHDRAWAL = 50 
+
+# TWILIO CREDENTIALS (REQUIRED FOR REMINDERS)
+# Get these from your Twilio Console Dashboard
+TW_SID = os.environ.get("TWILIO_SID", "YOUR_TWILIO_ACCOUNT_SID")
+TW_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "YOUR_TWILIO_AUTH_TOKEN")
+TW_NUMBER = "whatsapp:+14155238886" # Your Twilio Sandbox Number
+
 def is_expired(expiry_date_str):
-    """Helper to check if the expiry date has passed."""
-    if not expiry_date_str: 
-        return False
+    if not expiry_date_str: return False
     try:
         expiry = datetime.strptime(expiry_date_str, '%Y-%m-%d')
         return datetime.now() > expiry
     except ValueError:
         return False
 
+# --- NEW: AUTOMATIC REMINDER ENDPOINT ---
+# Set up a Cron Job to hit this URL (e.g., https://your-app.com/cron/send_reminders) daily
+@app.route('/cron/send_reminders', methods=['GET'])
+def send_reminders():
+    try:
+        # 1. Calculate "Tomorrow's Date"
+        tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+        
+        # 2. Get shops expiring tomorrow
+        expiring_shops = database.get_shops_expiring_on(tomorrow)
+        
+        if not expiring_shops:
+            return f"No shops expiring on {tomorrow}."
+
+        # 3. Initialize Twilio Client
+        client = Client(TW_SID, TW_TOKEN)
+        
+        count = 0
+        for phone, name in expiring_shops:
+            try:
+                # 4. Send the Active Message
+                msg_body = (f"⚠️ *Urgent Reminder*\n\n"
+                            f"Hello {name}, your shop subscription expires tomorrow ({tomorrow})!\n"
+                            f"To keep your shop online, please text *PAY* to renew now.")
+                
+                # Phone comes from DB as 'whatsapp:+254...', which is what Twilio needs
+                message = client.messages.create(
+                    body=msg_body,
+                    from_=TW_NUMBER,
+                    to=phone 
+                )
+                app.logger.info(f"Reminder sent to {name}: {message.sid}")
+                count += 1
+            except Exception as e:
+                app.logger.error(f"Failed to msg {name}: {e}")
+
+        return f"✅ Cron Job Complete. Sent {count} reminders for {tomorrow}."
+        
+    except Exception as e:
+        app.logger.error(f"Cron Error: {e}")
+        return f"❌ Error: {e}"
+
+
 @app.route('/bot', methods=['POST'])
 def bot():
-    """
-    Main entry point for WhatsApp messages.
-    """
-    incoming_msg = request.values.get('Body', '').strip().upper()
+    # --- 1. DUAL INPUT HANDLING ---
+    # raw_msg: Preserves case (e.g., "Mama's Cafe", "http://mylink.com")
+    # command_msg: Uppercase for logic checks (e.g., "REGISTER", "HELP")
+    raw_msg = request.values.get('Body', '').strip()
+    command_msg = raw_msg.upper()
     sender_number = request.values.get('From', '') 
     
     resp = MessagingResponse()
     msg = resp.message()
 
-    # --- 1. INTELLIGENT HELP SYSTEM ---
-    if incoming_msg == 'HELP':
-        # Check if this user is a shop owner
+    # --- 2. INTELLIGENT HELP SYSTEM ---
+    if command_msg == 'HELP':
         shop = database.get_shop(sender_number)
-        
         if shop:
-            # === OWNER MENU ===
             msg.body(f"👋 *Hello {shop[1]} Owner!*\n\n"
-                     "Here are your management commands:\n"
+                     "Here is your menu:\n"
                      "--------------------------------\n"
-                     "📊 *STATUS* - Check subscription & details\n"
-                     "💰 *PAY* - Renew your subscription\n"
-                     "📝 *UPDATE* - Change details\n"
+                     "📊 *STATUS* - View Wallet & Expiry\n"
+                     "💸 *WITHDRAW* - Cash out to M-Pesa\n"
+                     "💰 *PAY* - Renew Subscription\n"
+                     "📝 *UPDATE* - Edit Details\n"
                      "   Format: UPDATE | FIELD | VALUE\n"
                      "   (e.g., UPDATE | HOURS | 8am-8pm)\n"
                      "--------------------------------\n"
                      "Need support? Contact Admin at https://dms-23bq.vercel.app/ OR +254703903056")
         else:
-            # === CUSTOMER / NEW USER MENU ===
             msg.body("🤖 *Welcome to Dtekk ShopBot Help*\n\n"
-                     "🛍️ *I want to find a shop:*\n"
-                     "Text: *VIEW [Shop Name]*\n"
-                     "(Example: VIEW Mama Mboga)\n\n"
-                     "💼 *I am a Shop Owner:*\n"
-                     "To put your business online, text:\n"
-                     "*REGISTER | Name | Menu Link | Map | Pay Info | Hours*")
-        
+                     "🛍️ *Customers:*\n"
+                     "• To Buy: *BUY | Shop Name | Amount*\n"
+                     "• To View: *VIEW [Shop Name]*\n\n"
+                     "💼 *Shop Owners:*\n"
+                     "• To Join: *REGISTER | Name | Link | Map | Pay Info | Hours*")
         return str(resp)
-
-    # --- 2. WELCOME HANDLER (Hi, Hello, Start) ---
+    
+     # --- 2. WELCOME HANDLER (Hi, Hello, Start) ---
     GREETINGS = ['HI', 'HELLO', 'START', 'JAMBO', 'HEY']
-    if incoming_msg in GREETINGS:
+    if command_msg in GREETINGS:
         msg.body("👋 *Welcome to ShopBot!*\n\n"
                  "Are you a Customer or a Shop Owner?\n\n"
                  "👉 Text *HELP* to see what I can do.")
         return str(resp)
 
-
-    # --- 3. REGISTRATION (Shop Owner) ---
-    if incoming_msg.startswith('REGISTER'):
+    # --- 3. REGISTRATION (Uses raw_msg to preserve case) ---
+    if command_msg.startswith('REGISTER'):
         try:
-            parts = incoming_msg.split('|')
+            # Split the RAW message to keep "Mama's Shop" instead of "MAMA'S SHOP"
+            parts = raw_msg.split('|')
             if len(parts) < 6:
-                msg.body("⚠️ *Format Error!* \n\n"
-                         "Please copy, paste and edit this format:\n\n"
-                         "REGISTER | My Shop | www.link.com | Nairobi | Mpesa 07XX | 8am-5pm")
+                msg.body("⚠️ *Format Error!* Use:\n"
+                         "REGISTER | Name | Link | Map | Pay Info | Hours")
                 return str(resp)
 
+            # We slice [1:] effectively because the first part is the command 'REGISTER'
+            # But safer to unpack manually:
             _, shop_name, catalog, location, payment, hours = [p.strip() for p in parts]
             
             success, result = database.add_shop(sender_number, shop_name, catalog, location, payment, hours)
             
             if success:
-                msg.body(f"✅ *{shop_name}* is LIVE!\n\n"
-                         f"📅 Trial valid until: {result}\n\n"
-                         f"👉 Text *STATUS* to see your dashboard.")
+                msg.body(f"✅ *{shop_name}* is LIVE!\nTrial until: {result}\nText *STATUS* to see dashboard.")
             else:
-                msg.body(f"❌ Error registering: {result}")
-                
+                msg.body(f"❌ Error: {result}")
         except Exception as e:
-            app.logger.error(f"Registration Error: {e}")
-            msg.body("System Error.")
-        
+            msg.body("System Error. Ensure you used the '|' separator.")
         return str(resp)
 
-    # --- 4. PAYMENT (Shop Owner) ---
-    elif incoming_msg == 'PAY':
+    # --- 4. CUSTOMER BUY (Money IN) ---
+    elif command_msg.startswith('BUY'):
+        try:
+            # Use raw_msg so specific casing in shop names might be respected (depending on DB search)
+            parts = raw_msg.split('|')
+            if len(parts) < 3:
+                msg.body("⚠️ Format: *BUY | Shop Name | Amount*")
+                return str(resp)
+
+            _, shop_query, amount_str = [p.strip() for p in parts]
+            shop = database.search_shop_by_name(shop_query)
+            
+            if not shop:
+                msg.body(f"❌ Shop '{shop_query}' not found.")
+                return str(resp)
+            
+            amount = float(amount_str)
+            customer_phone = sender_number.replace('whatsapp:', '').replace('+', '')
+            
+            # 1. Trigger STK Push
+            res = mpesa.trigger_stk_push(customer_phone, int(amount))
+            
+            if res.get('ResponseCode') == '0':
+                # 2. LOG PENDING TRANSACTION
+                checkout_id = res.get('CheckoutRequestID')
+                target_shop_phone = shop[0] 
+                
+                database.log_pending_transaction(checkout_id, sender_number, 'PURCHASE', target_shop_phone, amount)
+                
+                msg.body(f"📲 *Payment Initiated*\n"
+                         f"Paying KES {amount} to {shop[1]}.\n"
+                         f"Enter PIN to complete.")
+            else:
+                msg.body("❌ Payment Failed. Try again.")
+                
+        except ValueError:
+            msg.body("❌ Amount must be a number.")
+        except Exception as e:
+            app.logger.error(f"Buy Error: {e}")
+            msg.body("System Error.")
+        return str(resp)
+
+    # --- 5. OWNER WITHDRAW (Money OUT) ---
+    elif command_msg == 'WITHDRAW':
         shop = database.get_shop(sender_number)
         if not shop:
-            msg.body("❌ You are not registered. Text *HELP* for instructions.")
+            msg.body("❌ Not registered.")
+            return str(resp)
+            
+        current_balance = shop[7]
+        
+        if current_balance < MIN_WITHDRAWAL:
+            msg.body(f"❌ Balance too low (KES {current_balance}).\nMinimum withdrawal is KES {MIN_WITHDRAWAL}.")
+            return str(resp)
+            
+        # Deduct from DB First
+        amount_to_send = database.debit_wallet_all(sender_number)
+        
+        if amount_to_send > 0:
+            clean_phone = sender_number.replace('whatsapp:', '').replace('+', '')
+            b2c_res = mpesa.pay_shop_owner(clean_phone, amount_to_send)
+            app.logger.info(f"B2C Result: {b2c_res}")
+            
+            msg.body(f"✅ *Withdrawal Processed!*\n"
+                     f"Sending KES {amount_to_send} to your M-Pesa.\n"
+                     f"Wallet Reset to 0.0")
+        else:
+            msg.body("❌ Withdrawal Error.")
+        return str(resp)
+
+    # --- 6. SUBSCRIPTION PAYMENT ---
+    elif command_msg == 'PAY':
+        shop = database.get_shop(sender_number)
+        if not shop:
+            msg.body("❌ Not registered.")
             return str(resp)
 
         mpesa_phone = sender_number.replace('whatsapp:', '').replace('+', '')
+        res = mpesa.trigger_stk_push(mpesa_phone, amount=1)
         
-        try:
-            # Trigger STK Push (1 KES)
-            response = mpesa.trigger_stk_push(mpesa_phone, amount=1)
-            
-            if response.get('ResponseCode') == '0':
-                msg.body("📲 *Payment Initiated*\n\n"
-                         "Please enter your M-Pesa PIN when prompted.")
-            else:
-                msg.body(f"❌ M-Pesa Error: {response.get('ResponseDescription')}")
-                
-        except Exception as e:
-            app.logger.error(f"Payment Error: {e}")
-            msg.body("❌ System Error. Try again later.")
-            
-        return str(resp)
-        
-    # --- 4.5 UPDATE DETAILS (New Feature) ---
-    # Format: UPDATE | FIELD | NEW VALUE
-    elif incoming_msg.startswith('UPDATE'):
-        # 1. Parse the command
-        parts = incoming_msg.split('|')
-        
-        # We need exactly 3 parts: Command, Field, Value
-        if len(parts) < 3:
-            msg.body("⚠️ *Update Format Error*\n\n"
-                     "To update, use this format:\n"
-                     "*UPDATE | FIELD | NEW VALUE*\n\n"
-                     "Examples:\n"
-                     "• UPDATE | HOURS | 9am - 9pm\n"
-                     "• UPDATE | PAY | Till 123456\n"
-                     "• UPDATE | CATALOG | www.newmenu.com")
-            return str(resp)
-        
-        _, field_name, new_value = [p.strip() for p in parts]
-        
-        # 2. Call Database
-        success, response_message = database.update_shop_field(sender_number, field_name, new_value)
-        
-        if success:
-            msg.body(f"✅ {response_message}\n\n"
-                     f"Text *STATUS* to see your changes.")
+        if res.get('ResponseCode') == '0':
+            checkout_id = res.get('CheckoutRequestID')
+            database.log_pending_transaction(checkout_id, sender_number, 'SUBSCRIPTION')
+            msg.body("📲 Enter M-Pesa PIN to renew.")
         else:
-            msg.body(f"❌ Error: {response_message}")
-            
+            msg.body("❌ Payment Failed.")
         return str(resp)
 
-    # --- 5. STATUS (Shop Owner) ---
-    elif incoming_msg == 'STATUS':
+    # --- 7. UPDATE DETAILS (Uses raw_msg) ---
+    elif command_msg.startswith('UPDATE'):
+        # raw_msg split preserves "8am-5pm" instead of "8AM-5PM"
+        parts = raw_msg.split('|')
+        if len(parts) < 3:
+            msg.body("⚠️ Use: UPDATE | FIELD | VALUE")
+            return str(resp)
+        _, field, val = [p.strip() for p in parts]
+        
+        # database.py handles the field name capitalization (field.upper()),
+        # so passing raw 'field' is safe. 'val' is passed raw to preserve case.
+        success, res = database.update_shop_field(sender_number, field.upper(), val)
+        msg.body(f"✅ {res}" if success else f"❌ {res}")
+        return str(resp)
+
+    # --- 8. STATUS ---
+    elif command_msg == 'STATUS':
         existing_shop = database.get_shop(sender_number)
         if existing_shop:
-            expiry_date = existing_shop[6]
-            is_active = not is_expired(expiry_date)
-            status_txt = "✅ Active" if is_active else "❌ Suspended (Text PAY)"
-            
-            msg.body(f"🏢 *{existing_shop[1]}*\n"
-                     f"📅 Expiry: {expiry_date}\n"
+            msg.body(f"🏢 *{existing_shop[1]} Dashboard*\n"
+                     f"💰 *Wallet: KES {existing_shop[7]}*\n" 
+                     f"📅 Expiry: {existing_shop[6]}\n"
                      f"----------------\n"
-                     f"Status: {status_txt}")
+                     f"To cash out, text *WITHDRAW*")
         else:
-            msg.body("❌ You are not registered.\nText *HELP* to get started.")
+            msg.body("❌ Not registered.")
         return str(resp)
 
-    # --- 6. CUSTOMER VIEW (End User) ---
-    elif incoming_msg.startswith('VIEW'):
-        search_query = incoming_msg[5:].strip()
-        
-        shop = database.search_shop_by_name(search_query)
-        
+    # --- 9. VIEW & FALLBACK ---
+    elif command_msg.startswith('VIEW'):
+        # Slice the raw message to keep the search query casing clean
+        # e.g. "VIEW Mama Mboga" -> query = "Mama Mboga"
+        query = raw_msg[5:].strip()
+        shop = database.search_shop_by_name(query)
         if shop:
-            expiry_date = shop[6]
-            
-            if is_expired(expiry_date):
-                msg.body(f"⚠️ *Account Suspended*\n\n"
-                         f"The shop '{shop[1]}' is currently inactive.\n"
-                         f"Please notify the owner.")
+            if is_expired(shop[6]):
+                msg.body(f"⚠️ {shop[1]} is currently unavailable.")
             else:
-                response_text = (
-                    f"🏪 *{shop[1]}*\n"
-                    f"📍 {shop[3]}\n"
-                    f"🕒 {shop[5]}\n"
-                    f"----------------\n"
-                    f"📋 *Catalog*: {shop[2]}\n"
-                    f"💳 *Pay*: {shop[4]}\n"
-                    f"----------------\n"
-                    f"Powered by Dtekk ShopBot"
-                )
-                msg.body(response_text)
+                msg.body(f"🏪 *{shop[1]}*\n📍 {shop[3]}\n🕒 {shop[5]}\n"
+                         f"📋 Catalog: {shop[2]}\n"
+                         f"💳 Pay: {shop[4]}\n\n"
+                         f"👉 To buy, text: *BUY | {shop[1]} | Amount*")
         else:
-            msg.body(f"❌ Could not find '{search_query}'.\n"
-                     f"Text *HELP* if you are stuck.")
-            
+            msg.body("❌ Shop not found.")
         return str(resp)
-
-    # --- 7. FALLBACK / CATCH-ALL ---
-    # If the user sends gibberish or a wrong command
+    
     else:
-        msg.body("🤔 I didn't understand that.\n\n"
-                 "👉 Text *HELP* to see the menu.")
-
+        msg.body("👋 Welcome! Text *HELP* to see menu.")
+    
     return str(resp)
 
-# --- M-PESA LISTENER (Unchanged) ---
+# --- CALLBACK LISTENER ---
 @app.route('/mpesa_callback', methods=['POST'])
 def mpesa_callback():
     data = request.json
     try:
-        stk_callback = data.get('Body', {}).get('stkCallback', {})
-        if stk_callback.get('ResultCode') == 0:
-            meta_data = stk_callback.get('CallbackMetadata', {}).get('Item', [])
-            phone_number = ""
-            for item in meta_data:
-                if item.get('Name') == 'PhoneNumber':
-                    phone_number = str(item.get('Value'))
-                    break
+        stk = data.get('Body', {}).get('stkCallback', {})
+        
+        if stk.get('ResultCode') == 0:
+            checkout_id = stk.get('CheckoutRequestID')
+            tx = database.get_pending_transaction(checkout_id)
             
-            if phone_number:
-                db_phone_key = f"whatsapp:+{phone_number}"
-                database.renew_subscription(db_phone_key)
-                app.logger.info(f"✅ Renewed: {db_phone_key}")
+            if tx:
+                tx_type = tx[2]
+                
+                if tx_type == 'SUBSCRIPTION':
+                    database.renew_subscription(tx[1]) 
+                    app.logger.info(f"✅ Renewed Subscription for {tx[1]}")
+                    
+                elif tx_type == 'PURCHASE':
+                    target_shop = tx[3]
+                    amount = tx[4]
+                    database.credit_wallet(target_shop, amount)
+                    app.logger.info(f"✅ Credited {amount} to Shop {target_shop}")
+            else:
+                app.logger.warning(f"⚠️ Transaction {checkout_id} not found in pending list.")
+                
     except Exception as e:
         app.logger.error(f"Callback Error: {e}")
 
