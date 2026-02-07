@@ -117,11 +117,12 @@ def bot():
                  "👉 Text *HELP* to see what I can do.")
         return str(resp)
 
-    # --- 3. REGISTRATION (Uses raw_msg to preserve case) ---
+    # --- 3. REGISTRATION (ROBUST) ---
     if command_msg.startswith('REGISTER'):
         try:
-            # Split the RAW message to keep "Mama's Shop" instead of "MAMA'S SHOP"
-            parts = raw_msg.split('|')
+            # FIX: Limit split to 5. This handles if user puts '|' inside the hours/desc
+            parts = raw_msg.split('|', 5)
+            
             if len(parts) < 6:
                 msg.body("⚠️ *Format Error!* Use:\n"
                          "REGISTER | Name | Link | Map | Pay Info | Hours")
@@ -183,7 +184,7 @@ def bot():
             msg.body("System Error.")
         return str(resp)
 
-    # --- 5. OWNER WITHDRAW (Money OUT) ---
+    # --- 5. SECURE WITHDRAWAL (Money OUT) ---
     elif command_msg == 'WITHDRAW':
         shop = database.get_shop(sender_number)
         if not shop:
@@ -195,20 +196,26 @@ def bot():
         if current_balance < MIN_WITHDRAWAL:
             msg.body(f"❌ Balance too low (KES {current_balance}).\nMinimum withdrawal is KES {MIN_WITHDRAWAL}.")
             return str(resp)
-            
-        # Deduct from DB First
-        amount_to_send = database.debit_wallet_all(sender_number)
         
-        if amount_to_send > 0:
-            clean_phone = sender_number.replace('whatsapp:', '').replace('+', '')
-            b2c_res = mpesa.pay_shop_owner(clean_phone, amount_to_send)
-            app.logger.info(f"B2C Result: {b2c_res}")
+        # INTEGRITY CHECK: Prevent double-withdrawals
+        if database.check_pending_withdrawal(sender_number):
+            msg.body("⚠️ Withdrawal already in progress. Please wait.")
+            return str(resp)
             
-            msg.body(f"✅ *Withdrawal Processed!*\n"
-                     f"Sending KES {amount_to_send} to your M-Pesa.\n"
-                     f"Wallet Reset to 0.0")
-        else:
-            msg.body("❌ Withdrawal Error.")
+        clean_phone = sender_number.replace('whatsapp:', '').replace('+', '')
+        
+        # 1. Trigger B2C (Do NOT debit yet)
+        b2c_res = mpesa.pay_shop_owner(clean_phone, current_balance)
+        
+        # 2. Log Pending
+        # B2C returns ConversationID or OriginatorConversationID
+        req_id = b2c_res.get('ConversationID', f"W_{datetime.now().timestamp()}")
+        
+        database.log_pending_transaction(req_id, sender_number, 'WITHDRAWAL', amount=current_balance)
+        
+        msg.body(f"⏳ *Processing Withdrawal...*\n"
+                 f"Requesting KES {current_balance}.\n"
+                 f"You will receive an M-Pesa SMS shortly.")
         return str(resp)
 
     # --- 6. SUBSCRIPTION PAYMENT ---
@@ -280,32 +287,54 @@ def bot():
     
     return str(resp)
 
-# --- CALLBACK LISTENER ---
+# --- CALLBACK LISTENER (The Ledger) ---
 @app.route('/mpesa_callback', methods=['POST'])
 def mpesa_callback():
     data = request.json
     try:
-        stk = data.get('Body', {}).get('stkCallback', {})
-        
-        if stk.get('ResultCode') == 0:
-            checkout_id = stk.get('CheckoutRequestID')
-            tx = database.get_pending_transaction(checkout_id)
-            
-            if tx:
-                tx_type = tx[2]
+        # 1. HANDLE STK PUSH (Customer Buy / Sub Pay)
+        if 'stkCallback' in data.get('Body', {}):
+            stk = data['Body']['stkCallback']
+            if stk.get('ResultCode') == 0:
+                checkout_id = stk.get('CheckoutRequestID')
+                tx = database.get_pending_transaction(checkout_id)
                 
-                if tx_type == 'SUBSCRIPTION':
-                    database.renew_subscription(tx[1]) 
-                    app.logger.info(f"✅ Renewed Subscription for {tx[1]}")
+                if tx:
+                    tx_type = tx[2]
                     
-                elif tx_type == 'PURCHASE':
-                    target_shop = tx[3]
-                    amount = tx[4]
-                    database.credit_wallet(target_shop, amount)
-                    app.logger.info(f"✅ Credited {amount} to Shop {target_shop}")
-            else:
-                app.logger.warning(f"⚠️ Transaction {checkout_id} not found in pending list.")
+                    if tx_type == 'SUBSCRIPTION':
+                        database.renew_subscription(tx[1]) 
+                        app.logger.info(f"✅ Renewed Subscription for {tx[1]}")
+                        
+                    elif tx_type == 'PURCHASE':
+                        target_shop = tx[3]
+                        amount = tx[4]
+                        database.credit_wallet(target_shop, amount)
+                        app.logger.info(f"✅ Credited {amount} to Shop {target_shop}")
+                else:
+                    app.logger.warning(f"⚠️ Transaction {checkout_id} not found in pending list.")
+
+        # 2. HANDLE B2C (Owner Withdrawal)
+        # B2C results often come in a 'Result' object
+        elif 'Result' in data:
+            result = data['Result']
+            conv_id = result.get('ConversationID')
+            
+            # Find the transaction using ConversationID
+            tx = database.get_pending_transaction(conv_id)
+            
+            if tx and result.get('ResultCode') == 0:
+                # SUCCESS: NOW we debit the wallet
+                shop_phone = tx[1]
+                database.debit_wallet_all(shop_phone)
+                database.clear_pending_withdrawal(shop_phone)
+                app.logger.info(f"✅ Withdrawal Confirmed for {shop_phone}")
                 
+            elif tx:
+                # FAILURE: Just release lock
+                database.clear_pending_withdrawal(tx[1])
+                app.logger.info(f"❌ Withdrawal Failed for {tx[1]}")
+
     except Exception as e:
         app.logger.error(f"Callback Error: {e}")
 

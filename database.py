@@ -98,10 +98,30 @@ def renew_subscription(phone_number, days=30):
 
 # --- NEW: WALLET & TRANSACTION LOGIC ---
 
+def check_pending_withdrawal(shop_phone):
+    """
+    Checks if this shop already has a withdrawal in progress.
+    Returns: Boolean (True if pending exists)
+    """
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT * FROM pending_transactions WHERE user_phone=? AND transaction_type='WITHDRAWAL'", (shop_phone,))
+    row = c.fetchone()
+    conn.close()
+    return row is not None
+
+def clear_pending_withdrawal(shop_phone):
+    """Removes the pending lock after success/failure."""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("DELETE FROM pending_transactions WHERE user_phone=? AND transaction_type='WITHDRAWAL'", (shop_phone,))
+    conn.commit()
+    conn.close()
+
 def log_pending_transaction(checkout_id, user_phone, tx_type, target_shop=None, amount=0):
     """
     Saves a transaction as 'Pending' while we wait for M-Pesa PIN entry.
-    tx_type: 'SUBSCRIPTION' or 'PURCHASE'
+    tx_type: 'SUBSCRIPTION' or 'PURCHASE' or 'WITHDRAWAL'
     """
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -155,7 +175,7 @@ def credit_wallet(shop_phone, amount):
 def debit_wallet_all(shop_phone):
     """
     Empties the shop's wallet for withdrawal.
-    Returns the amount that was withdrawn (so we know how much to send via B2C).
+    NOW: Only called AFTER success callback.
     """
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
